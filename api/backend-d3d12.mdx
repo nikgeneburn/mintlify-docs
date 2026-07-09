@@ -1,0 +1,79 @@
+---
+title: "D3D12 backend"
+description: "prim32_dx12 — device objects, the frame contract, textures, GPU zones."
+icon: "microchip"
+---
+
+The backend owns one PSO, one root signature, the upload-buffer ring, the
+texture table (64 slots, slot 0 = built-in font atlas), cached-layer VRAM
+buffers, and GPU timestamp queries. Shaders are embedded HLSL compiled at
+runtime through `d3dcompiler_47` (SM 5.1) — present on every Windows 10/11
+machine, no DXC redistributables.
+
+## Init / Shutdown
+
+```cpp
+prim32_dx12::InitDesc bd = {};
+bd.device         = device;
+bd.queue          = queue;           // atlas uploads + ring fencing
+bd.rtvFormat      = DXGI_FORMAT_R8G8B8A8_UNORM;
+bd.framesInFlight = 3;               // match your swapchain depth
+bd.maxPrims       = 0;               // 0 -> 1,048,576 prims/frame (32 MB per ring slot)
+bd.maxTextures    = 0;               // 0 -> 64
+bool ok = prim32_dx12::Init(ctx, bd);
+
+// on exit (after draining your queue):
+prim32_dx12::Shutdown();
+```
+
+`Init` uploads the built-in font atlas and registers the texture hooks that
+`LoadImageFrom*` / `LoadFontFrom*` use — **load resources after Init**.
+
+## Per frame
+
+```cpp
+prim32::FrameMem mem = prim32_dx12::NewFrame();   // waits this ring slot's fence
+// ... prim32::NewFrame / build / prim32::EndFrame ...
+prim32_dx12::Render(dd, cmdList);                 // records ~1 draw per range
+// ... ExecuteCommandLists ...
+prim32_dx12::NotifyExecuted();                    // fences the slot; advances the ring
+```
+
+`Render` expects your RTV bound and viewport-sized render target; it sets
+viewport/scissor, pipeline state, and issues one `DrawInstanced(6*count)` per
+window/layer range. Dirty cached layers are uploaded here too (transient
+upload buffer → right-sized VRAM buffer, fence-deferred cleanup).
+
+<Warning>
+If `Stats::overflow` from `prim32::GetStats()` is ever true, a frame emitted
+more prims than `maxPrims` — raise it in `InitDesc`.
+</Warning>
+
+## Custom textures (engine integration)
+
+```cpp
+uint32_t slot = prim32_dx12::RegisterTexture(myResource, DXGI_FORMAT_R8G8B8A8_UNORM);
+```
+
+Registers an SRV for a texture **you own** (keep it alive and in
+`PIXEL_SHADER_RESOURCE` state) and returns a raw slot for advanced use. Normal
+image work should use `LoadImageFromFile` / `LoadImageFromMemory` instead —
+this exists for render-target/video style integrations.
+
+## GPU zones
+
+```cpp
+prim32_dx12::GpuZoneBegin(cmdList, "Shadow pass");   // literal/stable name
+// ... commands ...
+prim32_dx12::GpuZoneEnd(cmdList);
+```
+
+Timestamp zones (nest up to 8 deep) recorded between `NewFrame()` and the end
+of `Render()` — `Render` resolves the queries. Results surface in the
+[profiler](/api/profiler) `framesInFlight` frames later, alongside the
+automatic per-range zones (every window and layer gets one).
+
+```cpp
+prim32_dx12::GpuStats gs = prim32_dx12::GetGpuStats();
+// gs.gpuMs (UI pass), gs.bytesStreamed (prims+clips last frame)
+```

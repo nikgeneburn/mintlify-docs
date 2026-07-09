@@ -1,0 +1,101 @@
+---
+title: "Images & fonts"
+description: "Loading, handles, lifetime, and the default-font chain."
+icon: "image"
+---
+
+Resource loading lives here — **never in draw calls**. Decode once, upload
+once, draw with the handle forever.
+
+## Images
+
+```cpp
+prim32::ImageHandle logo = prim32::LoadImageFromFile("assets/logo.png");
+prim32::ImageHandle icon = prim32::LoadImageFromMemory(bytes, size);   // encoded bytes
+
+if (prim32::IsValid(logo)) {
+    prim32::Vec2 size = prim32::GetImageSize(logo);
+}
+prim32::DestroyImage(logo);
+```
+
+PNG, JPG, BMP, GIF and TIFF decode through WIC (a Windows component — no
+third-party decoder is vendored). Decoding is isolated in one internal module,
+so swapping decoders later touches one function.
+
+<Info>
+**Ownership:** `LoadImageFromMemory` finishes with the data — free your buffer
+the moment the call returns. Pixels are decoded into an internal buffer,
+uploaded to a GPU texture, and the CPU copy is freed.
+</Info>
+
+## Fonts
+
+```cpp
+prim32::FontHandle body  = prim32::LoadFontFromFile("assets/Inter-Regular.ttf", 16.0f);
+prim32::FontHandle title = prim32::LoadFontFromMemory(ttfBytes, ttfSize, 24.0f);   // TTF/OTF/TTC
+prim32::DestroyFont(title);
+```
+
+Each load rasterizes one size into its own R8 atlas (GDI baker, kerning pairs
+included) in its own texture slot — multiple sizes of one face are separate
+handles. The family name is parsed from the font's `name` table, so
+memory-loaded fonts need no face-name argument.
+
+<Info>
+**Ownership:** GDI copies the font bytes during load — free your buffer right
+after `LoadFontFromMemory` returns.
+</Info>
+
+## Font lookup
+
+`draw->Text(...)` without an explicit font resolves, in order:
+
+1. `PushFont` stack top
+2. `SetDefaultFont` value
+3. the built-in font (baked at `CreateContext` — always present)
+
+```cpp
+prim32::SetDefaultFont(body);            // global default
+prim32::FontHandle f = prim32::GetDefaultFont();
+
+prim32::PushFont(title);                 // scoped override (invalid handles rejected + logged)
+draw->Text("Heading", {20, 20});         // uses title
+prim32::PopFont();                       // underflow-safe
+```
+
+Widgets follow the same chain, so `PushFont` restyles whole widget blocks.
+Forgetting to set a default never crashes and never blanks text.
+
+## Measurement
+
+```cpp
+prim32::Vec2 a = prim32::MeasureText("hello");            // current font
+prim32::Vec2 b = prim32::MeasureText(title, "hello");     // explicit font
+float lh = prim32::GetFontLineHeight();                   // current font
+```
+
+## Handles & lifetime
+
+Handles are generational `{index, generation}` values — lightweight, copyable,
+comparable, with `InvalidImageHandle` / `InvalidFontHandle` constants. After
+`Destroy*`, stale copies of the handle simply resolve to invalid; nothing
+dangles and nothing crashes. GPU textures are released fence-deferred and their
+slots recycled. Everything remaining is cleaned up by `Shutdown()` +
+`DestroyContext()`. The built-in font cannot be destroyed.
+
+## Errors & stats
+
+```cpp
+prim32::ImageHandle img = prim32::LoadImageFromFile("missing.png");
+if (!prim32::IsValid(img))
+    printf("load failed: %s\n", prim32::GetLastResourceError());
+
+prim32::ResourceStats rs = prim32::GetResourceStats();
+// rs.images, rs.fonts, rs.textureBytes, rs.atlasBytes
+```
+
+Failures (missing file, bad bytes, unsupported format, GPU failure, full
+tables) return the invalid handle, set a readable message, and log via
+`OutputDebugString`. The profiler window shows live resource counts and
+texture/atlas memory.

@@ -1,0 +1,94 @@
+---
+title: "Profiler (p32prof)"
+description: "Hierarchical CPU scopes, GPU zones, process metrics, leak detection — always on, ~30 ns per scope."
+icon: "activity"
+---
+
+## CPU scopes
+
+```cpp
+{
+    P32PROF_SCOPE("BuildUI");            // RDTSC, path-based tree, nest freely
+    {
+        P32PROF_SCOPE("inventory grid");
+        // ...
+    }
+}
+p32prof::FrameMark();                    // once per frame, at the very end
+```
+
+Names must be string literals (pointers are stored, not copied). Every node
+tracks self ms, total ms, call count, % of frame, and **exact avg/min/max over
+a selectable window of the last 60 / 120 / 240 frames** (`SetStatWindow`).
+Unbalanced scopes are tolerated; recursion forms self-chains.
+
+## The profiler window
+
+```cpp
+static bool open = true;
+p32prof::ShowProfiler(ctx, &open, extraInfoString);
+```
+
+Drawn with prim32 itself: frame-time graph, process metrics, collapsible CPU
+tree with heat bars, GPU zones with window stats, and the tracked-memory
+inventory. **Copy profiler** puts the entire dump on the clipboard as text —
+built for pasting into bug reports. `pause` freezes the display; `csv log`
+writes one row per second for long-run graphing.
+
+## Process metrics
+
+`p32prof::SampleProcess()` once per frame (internally rate-limited to ~2 Hz)
+fills `ProcStats`:
+
+- **CPU** % of machine and of one core, threads, handles
+- **RAM** working set / peak / private commit, page faults/s
+- **GPU** per-process engine utilization (3D / copy / compute / video) via PDH —
+  the same source Task Manager uses (loaded dynamically; degrades gracefully)
+- **VRAM** used vs budget (DXGI)
+
+## Leak detection
+
+The sampler keeps ~2 minutes of RAM/VRAM history and fits a linear drift —
+while detecting one-time allocation **steps** separately so they are not
+mistaken for leaks:
+
+```
+STEP : one-time allocation +128 MB RAM / +64 MB VRAM, 23 s ago (not a leak)
+LEAK : RAM drift +0.05 MB/min | VRAM drift +0.00 MB/min  (steady)
+```
+
+`GetMemDrift()` exposes the verdict programmatically.
+
+## Memory inventory
+
+```cpp
+p32prof::TrackMem("gpu: shadow atlas", bytes);   // upsert by name; 0 to clear
+```
+
+The library registers all of its real allocations (upload ring, atlases,
+swapchain, cached layers, textures); the dump shows tracked entries plus the
+untracked remainder (private − tracked) so nothing hides.
+
+## GPU zones (read side)
+
+```cpp
+const p32prof::GpuZone* z; int n = p32prof::GetGpuZones(&z);   // name, ms, depth
+p32prof::ZoneStats zs;
+p32prof::GetGpuZoneWindow("UI pass", &zs);                     // avg/min/max over window
+```
+
+## The dump
+
+Everything above serializes into one text block — `CopyToClipboard(extra)` or
+`Dump(buf, cap, extra)`:
+
+```
+-- CPU TREE (ms, avg/min/max over last 240 frames) ---------
+scope                self    total      avg      min      max  calls %frame
+Frame               0.013    0.590    0.910    0.193    7.758      1 100.0%
+  BuildUI           0.000    0.076    0.097    0.075    0.189      1  12.8%
+...
+-- GPU ZONES (ms, frames-in-flight latent) -----------------
+UI pass             0.123 | avg 0.123  min 0.121  max 0.133
+...
+```

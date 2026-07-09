@@ -1,0 +1,72 @@
+---
+title: "Architecture"
+description: "Why 32 bytes per primitive changes the entire cost model."
+icon: "cpu"
+---
+
+## The primitive
+
+prim32 has exactly one unit of drawing — a 32-byte struct:
+
+```cpp
+struct Prim {
+    float    x0, y0, x1, y1;   // destination rect in pixels (line: the two endpoints)
+    uint32_t uv0, uv1;         // textured: unorm16x2 uv min/max
+                               // SDF:      uv0 = f16 radius | f16 thickness, uv1 = gradient color
+    Col      color;            // RGBA8
+    uint32_t meta;             // [0:4] type | [4:16] clip index | [16:24] texture slot
+};
+```
+
+Nine primitive types share it: `PRIM_RECT`, `PRIM_GLYPH`, `PRIM_RECT_ROUNDED`,
+`PRIM_RECT_STROKE`, `PRIM_CIRCLE`, `PRIM_CIRCLE_STROKE`, `PRIM_LINE`,
+`PRIM_IMAGE`, `PRIM_SHADOW`. A rounded rectangle that costs a tessellating UI
+library ~40 vertices (~1.3 KB) costs prim32 those same 32 bytes. A glyph is 32
+bytes instead of ~88. Nothing is ever tessellated on the CPU.
+
+## Zero-copy submission
+
+There is no draw-list build step. Emitters like `DrawRect` pack a few fields and
+perform **one 32-byte store directly into persistently-mapped GPU upload
+memory** (write-combined, strictly sequential, never read back). The measured
+cost is ~3.6 ns per primitive scalar, ~1.2 ns on the SIMD bulk path.
+
+The upload memory is a ring of `framesInFlight` buffers, each fenced, so the
+CPU never overwrites what the GPU is still reading — and never stalls when it
+isn't.
+
+## Vertex pulling — no vertex buffers exist
+
+The backend binds no vertex or index buffers. One `DrawInstanced(6 * N)` makes
+the vertex shader compute `prim = Prims[SV_VertexID / 6]` from a
+`StructuredBuffer` (a root SRV aimed either at the mapped ring or at a cached
+layer's VRAM buffer), expand the corner from a 6-entry LUT, and transform it.
+
+One PSO. One root signature. One descriptor table, set once per frame. About
+one draw call per window/layer range — a typical app renders in 3–5 draws, a
+stress test in one.
+
+## Analytic SDF shading
+
+Rounded corners, circles, rings, lines, borders and drop shadows are signed
+distance fields evaluated **per pixel in screen space** with exact 1-pixel
+antialiasing. No MSAA, no geometry cost, resolution independent. Solid rects
+take a dedicated fastest path; glyphs sample the R8 font atlas; images sample
+their RGBA texture slot — all in one shader with a per-quad-coherent branch.
+
+## Clipping in the vertex shader
+
+Clip rectangles live in a small GPU table; each primitive carries a 12-bit clip
+index. The VS clamps the quad against its clip rect and re-derives UVs through
+the original rect, so textures and glyphs stay registered. **Zero scissor
+changes, zero pipeline flushes — the draw call never breaks for clipping.**
+
+## What this buys
+
+| Traditional cost | prim32 |
+|---|---|
+| CPU tessellation of shapes/text | none — shapes are analytic, glyphs are quads |
+| Vertex + index bandwidth | 32 B/prim streamed once |
+| Draw calls & state changes per texture/clip | one texture table, clip in VS: ~1 draw/layer |
+| Font atlas rebuilds | never — atlases bake once at load |
+| Sync stalls | fenced ring, GPU timestamps ride the same ring |

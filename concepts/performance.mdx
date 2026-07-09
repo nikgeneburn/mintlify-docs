@@ -1,0 +1,72 @@
+---
+title: "Performance"
+description: "Measured numbers, the three walls, and the patterns that dodge them."
+icon: "gauge"
+---
+
+## Measured baseline
+
+RTX 3060, 1680×945, 16-core CPU, uncapped (vsync off, tearing on):
+
+| Scenario | Result |
+|---|---|
+| 95k animated rounded rects | 800+ fps, 0.55 ms GPU, 0.10 ms CPU emit |
+| 2,000,000 animated rounded rects | 234 fps — GPU raster-bound (3.5 ms), CPU 0.12 ms |
+| 1k prims | ~1,000+ fps — bound by windowed present pacing, not prim32 |
+| Emit throughput | 275 M prims/s scalar, 850 M prims/s SIMD (per core) |
+
+## The three walls
+
+<CardGroup cols={3}>
+  <Card title="CPU emit" icon="cpu">
+    ~1.2–3.6 ns/prim. 2M prims ≈ 2.4 ms SIMD. Below ~1M prims/frame the CPU is
+    effectively idle. Fix: the SIMD bulk pattern, or cached layers (zero emit).
+  </Card>
+  <Card title="PCIe streaming" icon="cable">
+    32 B × prims × fps. 1M prims @ 240 fps ≈ 7.7 GB/s — fine on PCIe 4.0.
+    Fix: cached layers (zero streaming).
+  </Card>
+  <Card title="GPU raster/fill" icon="microchip">
+    The real ceiling. Millions of small quads → raster-bound; large blended
+    quads → fill-bound (try Overdraw/Shadows modes). No submission scheme
+    removes this — only fewer/smaller prims or lower resolution.
+  </Card>
+</CardGroup>
+
+The demo's **bound by:** line computes the verdict live from profiler data —
+including the fourth, sneaky wall: *windowed present pacing* caps an idle-GPU
+app near ~1k fps regardless of library speed. F11 (fullscreen independent
+flip) raises it.
+
+## The SIMD bulk-emit pattern
+
+For thousands of prims with shared structure, skip the per-call emitters: grab
+a row of primitives and stream into them. Everything invariant gets hoisted;
+the inner loop is one SSE2 add + xor and two non-temporal 16-byte stores per
+primitive — measured 3.8× faster than scalar emit.
+
+```cpp
+prim32::Prim* p = prim32::AddPrims(ctx, count);      // reserve directly in GPU memory
+if (p) {
+    for (uint32_t i = 0; i < count; i++, p++) {
+        _mm_stream_si128((__m128i*)p,     rectAsM128i);   // x0 y0 x1 y1
+        _mm_stream_si128((__m128i*)p + 1, tailAsM128i);   // uv0 uv1 color meta
+    }
+    _mm_sfence();   // make NT stores visible before submission
+}
+```
+
+<Warning>
+The mapped buffer is **write-combined: never read from it**. Compose values in
+registers/locals and store once.
+</Warning>
+
+## The efficiency governor
+
+The demo includes the inverse benchmark: *the highest fps that fits a usage
+budget*. It is a duty-cycle controller — `period = measured GPU ms ÷ budget`,
+recomputed each frame from GPU timestamp zones (using the windowed **minimum**
+cost so idle-clock inflation doesn't spiral), plus a dead-banded CPU trim
+against process-wide measured usage. One honest caveat: at low duty cycles GPUs
+downclock ~10×, so the same work costs more milliseconds — the governor
+converges to that real equilibrium and the profiler shows it.

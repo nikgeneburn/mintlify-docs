@@ -1,0 +1,82 @@
+---
+title: "Widgets & windows"
+description: "The immediate-mode widget set built on the DrawList."
+icon: "app-window"
+---
+
+## Windows
+
+```cpp
+prim32::SetNextWindowPos({60, 60});          // applied on first use (pass true to force)
+prim32::SetNextWindowSize({320, 240});
+
+if (prim32::Begin("Settings", prim32::WF_AutoSize)) {
+    // widgets...
+}
+prim32::End();   // always call End, even when Begin returns false
+```
+
+| Flag | Effect |
+|---|---|
+| `WF_NoTitleBar` | no title bar (also disables dragging) |
+| `WF_NoMove` | fixed position |
+| `WF_NoBackground` | no shadow/background/border |
+| `WF_AutoSize` | size follows content |
+| `WF_Topmost` | always drawn above other windows (overlays) |
+| `WF_NoBringToFront` | clicks don't raise the window |
+
+Windows are draggable by the title bar and z-ordered; each window becomes one
+contiguous prim range = one draw call.
+
+## Widgets
+
+```cpp
+prim32::Text("plain text");
+prim32::TextColored(COL32(255, 200, 120), "colored");
+prim32::TextF("fps %.0f", fps);
+
+if (prim32::Button("Apply")) { }
+if (prim32::Checkbox("enabled", &flag)) { }
+if (prim32::SliderFloat("power", &v, 0.0f, 1.0f, "%.2f")) { }
+if (prim32::SliderInt("count", &n, 0, 100)) { }
+prim32::ProgressBar(0.4f);
+if (prim32::InvisibleButton("hitbox", {64, 64})) { }
+```
+
+Layout is a vertical cursor with `SameLine()`, `Spacing()`, `Separator()`,
+`Dummy(size)`, and `GetCursorScreenPos()` / `SetCursorScreenPos()` for free-form
+regions (reserve space with `Dummy`, then draw via the DrawList at absolute
+coordinates — the demo's showcase window is the reference).
+
+State queries: `IsItemHovered()`, `IsItemActive()`, `GetContentAvail()`,
+`GetFrameHeight()`.
+
+## IDs
+
+Labels are IDs, ImGui-style: `"Play##btn1"` displays `Play` and hashes the
+whole string. Use `PushID(i)` / `PopID()` in loops to disambiguate repeated
+labels.
+
+## Input
+
+Fill the `IO` struct each frame and pass it to `NewFrame`:
+
+```cpp
+struct IO {
+    Vec2  displaySize;
+    Vec2  mousePos;
+    bool  mouseDown[3];
+    float mouseWheel;
+    float deltaTime;
+};
+```
+
+Keyboard/text-input widgets are not implemented yet (see the roadmap notes in
+the README).
+
+## Style
+
+`Context::style` holds the theme: a `ZC_*` color table (window/frame/button/
+text/etc.), rounding radii, padding and spacing vectors, title-bar/frame
+heights. `Style::Dark()` is the built-in dark theme; mutate any field at
+runtime — there is no hidden state.

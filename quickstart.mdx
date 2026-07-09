@@ -1,47 +1,84 @@
 ---
 title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+description: "Clone, build, and push the benchmark until your GPU is the bottleneck."
+icon: "rocket"
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
-
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+## Build the demo
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
-
+  <Step title="Clone">
     ```bash
-    npm install your-package
+    git clone https://github.com/nikgeneburn/Prim32.git
+    cd Prim32
     ```
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+  <Step title="Compile">
+    From an **x64 Native Tools Command Prompt for VS**:
+
+    ```bat
+    scripts\build_demo.bat
+    ```
+
+    Or with CMake:
 
     ```bash
-    your-cli init
+    cmake -B build && cmake --build build --config Release
     ```
+
+    No packages, no submodules, no SDK downloads — the only dependencies are
+    Windows system libraries (`d3d12`, `dxgi`, `d3dcompiler`, `gdi32`,
+    `windowscodecs`, `pdh`).
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
-
-    ```bash
-    your-cli start
-    ```
+  <Step title="Run">
+    Launch the demo executable. **Esc** quits, **F11** toggles borderless
+    fullscreen.
   </Step>
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## Five minutes of things to try
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
+<AccordionGroup>
+  <Accordion title="Find your GPU's raster ceiling" icon="gauge">
+    Untick **vsync**, drag the count slider toward 2,000,000, and switch between
+    the stress modes (Rects / Rounded / Circles / Glyphs / Widgets / Overdraw /
+    Shadows). The **bound by:** line in the control panel names the wall you hit —
+    GPU raster, CPU emit, or present pacing.
+  </Accordion>
+  <Accordion title="Watch caching delete the CPU cost" icon="database">
+    Tick **cache stress (bake once, move free)**. Streamed MB/frame collapses to
+    a few KB, `emit grid` disappears from the profiler's CPU tree, and with
+    *animate* on, the entire grid glides around via a root-constant offset —
+    no rebake, no re-upload.
+  </Accordion>
+  <Accordion title="Cap resource usage instead of maxing fps" icon="battery-medium">
+    Tick **limit CPU/GPU usage** and set budgets (e.g. 1% GPU). The governor
+    paces frames with a high-resolution timer to the highest fps that fits the
+    budget, and shows the measured percentages next to the targets.
+  </Accordion>
+  <Accordion title="Copy a profiler dump" icon="clipboard">
+    Open the **Profiler** window and press **Copy profiler**. The full CPU tree,
+    GPU zones, process metrics, and memory inventory land on your clipboard as
+    text — made for pasting into issues and chats.
+  </Accordion>
+</AccordionGroup>
+
+## Your first prim32 code
+
+The demo's `ShowDrawListDemo` is the reference for the resource + DrawList flow:
+
+```cpp
+// load once, at startup (never in draw calls)
+prim32::FontHandle title = prim32::LoadFontFromFile("C:\\Windows\\Fonts\\arialbd.ttf", 24.0f);
+prim32::ImageHandle icon = prim32::LoadImageFromMemory(pngBytes, pngSize);
+
+// every frame
+prim32::DrawList* draw = prim32::GetDrawList();
+draw->Text("default font", {20, 20});
+draw->Text(title, "explicit font", {20, 44});
+draw->Image(icon, prim32::Rect{20, 84, 48, 48});
+```
+
+<Tip>
+Next: [wire prim32 into your own renderer](/integration) — it is four calls per frame.
 </Tip>

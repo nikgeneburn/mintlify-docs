@@ -1,0 +1,99 @@
+---
+title: "DrawList"
+description: "The immediate drawing interface: primitives, images, text, clipping."
+icon: "pen-tool"
+---
+
+```cpp
+prim32::DrawList* draw = prim32::GetDrawList();
+```
+
+The DrawList is a zero-cost veneer over prim32's inline emitters — each call
+compiles to packing fields and one 32-byte store into mapped GPU memory. It
+never loads, decodes, or creates GPU resources; it consumes handles created by
+the [resource layer](/api/images-and-fonts).
+
+## Primitives
+
+```cpp
+draw->FilledRect(Rect r, Col col, float rounding = 0);
+draw->Rect(Rect r, Col col, float thickness = 1, float rounding = 0);   // outline
+draw->Line(Vec2 a, Vec2 b, Col col, float thickness = 1);
+draw->Circle(Vec2 center, float radius, Col col, float thickness = 1);  // ring
+draw->FilledCircle(Vec2 center, float radius, Col col);
+draw->Shadow(Rect r, Col col, float rounding, float softness);
+```
+
+All curved shapes are analytic SDFs with 1-pixel antialiasing.
+`Rect{x, y, w, h}` is position + size; colors are `COL32(r, g, b, a)`.
+
+<Note>
+Arbitrary triangles are intentionally absent — they don't fit the 32-byte
+quad-primitive model that makes everything else fast.
+</Note>
+
+## Images
+
+```cpp
+draw->Image(img, Rect{20, 90, 128, 128});                          // uv 0..1, white tint
+draw->Image(img, Rect{20, 90, 128, 128}, COL32(255,255,255,128));  // tinted / alpha
+draw->Image(img, rect, Vec2{0,0}, Vec2{0.5f,0.5f});                // uv sub-rect
+draw->Image(img, Vec2{20, 90});                                    // natural size
+draw->Image(img, Vec2{20, 90}, Vec2{64, 64}, tint);                // pos + size
+```
+
+Handle resolution is an array index + generation compare (~2 ns). An invalid
+handle draws a magenta placeholder and logs in debug builds, and is a silent
+no-op in release — never a crash.
+
+## Text
+
+```cpp
+draw->Text("Hello", {20, 20});                        // current font, style text color
+draw->Text("Hello", {20, 20}, COL32(255, 80, 80));    // explicit color
+draw->Text(titleFont, "Title", {20, 50});             // explicit font
+draw->Text(titleFont, "Title", {20, 50}, color);
+```
+
+Without an explicit font, the [font lookup chain](/api/images-and-fonts#font-lookup)
+applies: `PushFont` stack → `SetDefaultFont` → built-in font.
+
+### Bounded text with TextOptions
+
+```cpp
+prim32::TextOptions to;
+to.align       = prim32::ALIGN_CENTER;    // ALIGN_LEFT / CENTER / RIGHT
+to.valign      = prim32::VALIGN_MIDDLE;   // VALIGN_TOP / MIDDLE / BOTTOM
+to.wrapWidth   = 288.0f;                  // 0 = no wrap ('\n' always honored)
+to.clip        = true;                    // clip to the bounds rect
+to.lineSpacing = 1.2f;                    // multiplier on font line height
+to.color       = 0;                       // 0 = style text color
+
+draw->Text("Long body copy that wraps and centers.", prim32::Rect{x, y, 300, 56}, to);
+draw->Text(bodyFont, text, bounds, to);   // explicit-font variant
+```
+
+Greedy word wrap with guaranteed progress on over-long words. Ellipsis
+truncation is reserved in the struct but not implemented yet.
+
+## Measurement
+
+```cpp
+prim32::Vec2 sz = draw->MeasureText("Hello");            // current font
+prim32::Vec2 sz2 = draw->MeasureText(titleFont, "Hi");   // explicit font
+```
+
+Measurement runs the same code path as rendering (advances + kerning + wrap),
+so it always matches pixels.
+
+## Clipping
+
+```cpp
+draw->PushClipRect(prim32::Rect{x, y, w, h});   // intersects with current clip
+draw->Image(img, imageRect);                    // clipped
+draw->Text("clipped", textPos);                 // clipped
+draw->PopClipRect();
+```
+
+Clipping happens in the vertex shader against a clip table — pixel-exact, no
+scissor changes, and the draw call never breaks.

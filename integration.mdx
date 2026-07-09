@@ -1,0 +1,105 @@
+---
+title: "Integration"
+description: "Add prim32 to an existing Direct3D 12 application."
+icon: "plug"
+---
+
+## Files
+
+Add the library sources to your build and `include/` to your include paths:
+
+```
+include/prim32/prim32.h        public API (core, DrawList, widgets, resources)
+include/prim32/prim32_dx12.h   D3D12 backend API
+include/prim32/p32prof.h       profiler API
+src/prim32.cpp                 core
+src/prim32_resources.cpp       images, fonts, handles
+src/backends/prim32_dx12.cpp   backend (embedded HLSL, compiled at runtime via FXC)
+src/profiler/p32prof.cpp       profiler core
+src/profiler/p32prof_ui.cpp    profiler window (optional but recommended)
+```
+
+Link: `d3d12 dxgi d3dcompiler gdi32 user32 psapi ole32 windowscodecs`.
+
+## Initialization
+
+```cpp
+#include <prim32/prim32.h>
+#include <prim32/prim32_dx12.h>
+
+prim32::FontDesc fd = { L"Segoe UI", 17.0f, /*kerning*/ true };
+prim32::Context* ctx = prim32::CreateContext(&fd);   // bakes the built-in font atlas
+
+prim32_dx12::InitDesc bd = {};
+bd.device         = device;                          // your ID3D12Device
+bd.queue          = queue;                           // your direct queue
+bd.rtvFormat      = DXGI_FORMAT_R8G8B8A8_UNORM;      // your swapchain format
+bd.framesInFlight = 3;                               // match your swapchain
+bd.maxPrims       = 0;                               // 0 -> 1M prims/frame (32 MB/slot)
+prim32_dx12::Init(ctx, bd);
+```
+
+<Note>
+Load images and fonts **after** `prim32_dx12::Init` — the resource layer needs
+the backend's texture hooks to upload atlases and images.
+</Note>
+
+## The frame loop
+
+prim32 records into **your** command list, against **your** render target.
+Bind the RTV and clear before calling `Render`.
+
+```cpp
+// 1. get this frame's mapped GPU memory (waits the ring fence if needed)
+prim32::FrameMem mem = prim32_dx12::NewFrame();
+
+// 2. begin the UI frame with fresh input
+prim32::IO io = {};
+io.displaySize = { (float)width, (float)height };
+io.mousePos    = mouse;
+io.mouseDown[0] = leftDown;
+io.deltaTime   = dt;
+prim32::NewFrame(mem, io);
+
+// 3. build UI — widgets and DrawList calls write straight into GPU memory
+if (prim32::Begin("Panel")) {
+    prim32::TextF("fps %.0f", fps);
+    if (prim32::Button("Do thing")) { /* clicked */ }
+}
+prim32::End();
+
+// 4. finish, record, submit, and fence the ring slot
+prim32::DrawData* dd = prim32::EndFrame();
+prim32_dx12::Render(dd, cmdList);           // ~1 draw per window/layer range
+
+queue->ExecuteCommandLists(1, lists);
+prim32_dx12::NotifyExecuted();              // signals the upload-ring fence
+```
+
+<Warning>
+`NotifyExecuted()` must be called after every `ExecuteCommandLists` that
+contained a `Render`. It fences the frame's upload buffer; skipping it stalls
+`NewFrame` a few frames later.
+</Warning>
+
+## Shutdown
+
+```cpp
+// drain your queue first, then:
+prim32_dx12::Shutdown();      // releases GPU resources, unhooks the resource layer
+prim32::DestroyContext(ctx);
+```
+
+## Optional: profiler
+
+```cpp
+#include <prim32/p32prof.h>
+
+{ P32PROF_SCOPE("Game update"); Update(); }   // nest freely, ~30 ns per scope
+
+p32prof::SampleProcess();   // CPU/RAM/GPU%/VRAM sampling (rate-limited internally)
+p32prof::FrameMark();       // once, at the very end of the frame
+
+static bool open = true;
+p32prof::ShowProfiler(ctx, &open, nullptr);   // the profiler window, drawn with prim32
+```

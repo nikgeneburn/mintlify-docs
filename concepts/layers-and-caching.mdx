@@ -1,0 +1,65 @@
+---
+title: "Layers & caching"
+description: "Background, windows, foreground — and retained layers that redraw for free."
+icon: "layers"
+---
+
+## Draw order
+
+prim32 has an ImGui-style layer model. Every frame renders in this order:
+
+1. **Background** items, in submission order — anything drawn outside a window
+2. **Windows**, z-sorted (click brings to front; `WF_Topmost` floats above)
+3. **Foreground** items — above everything
+
+```cpp
+prim32::BeginLayer(prim32::LAYER_FOREGROUND);
+draw->Circle(mousePos, 13.0f, prim32::COL32(255, 220, 120, 150), 1.5f);
+prim32::EndLayer();   // back to background
+```
+
+Every draw API works in every layer — text, images, primitives, clipping.
+
+## Cached layers: only redo what changed
+
+A `CachedLayer` is a retained block of primitives living in a **VRAM buffer**.
+Record it once with any draw calls; draw it every frame for approximately
+nothing; re-record only when the content truly changes.
+
+```cpp
+prim32::CachedLayer* minimap = prim32::CreateCachedLayer(100000, "minimap");
+
+// bake (once, or whenever content changes)
+prim32::BeginCache(minimap);              // redirects ALL draw calls into the layer
+draw->FilledRect({0, 0, 256, 256}, bg, 8.0f);
+draw->Text("sector 7", {8, 8});           // layer-local coordinates
+prim32::EndCache();                       // one upload to VRAM
+
+// every frame — free:
+prim32::DrawCached(minimap, {x, y});      // offset is a root constant
+```
+
+<Info>
+**Moving a cached layer costs one root-constant update.** The offset is applied
+in the vertex shader; clip rects recorded inside the cache are rebased and
+offset automatically. Dragging a fully-cached window re-emits nothing.
+</Info>
+
+### What happens under the hood
+
+- `BeginCache` swaps the context's emit target to the layer's CPU staging; the
+  same inline emitters write there at the same speed.
+- `EndCache` bumps the layer's version. The backend uploads it once — through a
+  transient upload buffer into a right-sized DEFAULT-heap (VRAM) buffer.
+- `DrawCached` copies the layer's few clip rects into the frame's clip table
+  and enqueues a draw range whose root SRV points at VRAM. The GPU never
+  touches PCIe for those primitives again.
+
+### What caching does and does not buy
+
+Caching removes **CPU emit** and **PCIe streaming**. It raises fps only when
+one of those is the binding wall; otherwise it lowers *cost* (CPU %, bandwidth,
+power) at the same fps. In the benchmark, caching 2M rounded rects cuts CPU
+from milliseconds to 0.12 ms and streaming from 64 MB/frame to ~0.1 — while fps
+stays raster-bound at the GPU's ceiling. The panel's **bound by:** line tells
+you which regime you are in.
