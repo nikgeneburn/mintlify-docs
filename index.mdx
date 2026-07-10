@@ -60,5 +60,7 @@ Numbers from the included benchmark (RTX 3060, 1680×945, i7 16-core):
 
 <Note>
 prim32 is Windows + Direct3D 12, C++17, and compiles with MSVC or MinGW with
-**zero external dependencies** — fonts bake through GDI, images decode through WIC.
+**zero external dependencies** — fonts rasterize through GDI (full Unicode BMP:
+CJK, Cyrillic, icon fonts), images decode through WIC. An optional FreeType
+backend (`PRIM32_WITH_FREETYPE`) extends coverage to every Unicode plane.
 </Note>

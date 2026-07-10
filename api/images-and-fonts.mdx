@@ -37,10 +37,44 @@ prim32::FontHandle title = prim32::LoadFontFromMemory(ttfBytes, ttfSize, 24.0f);
 prim32::DestroyFont(title);
 ```
 
-Each load rasterizes one size into its own R8 atlas (GDI baker, kerning pairs
-included) in its own texture slot — multiple sizes of one face are separate
-handles. The family name is parsed from the font's `name` table, so
-memory-loaded fonts need no face-name argument.
+Each font size is its own handle with its own **dynamic glyph atlas**: glyphs
+of any script rasterize on first use, pack into 512/1024px atlas pages, and
+upload incrementally — nothing is pre-baked, and a CJK font does not cost
+20,000 glyphs up front. The family name is parsed from the font's `name`
+table, so memory-loaded fonts need no face-name argument.
+
+## Unicode & icons
+
+All text APIs take **UTF-8**. Chinese, Russian, Greek, icon fonts — anything
+the font covers just works:
+
+```cpp
+prim32::FontHandle cjk   = prim32::LoadFontFromFile("C:\\Windows\\Fonts\\msyh.ttc", 18.0f);
+prim32::FontHandle icons = prim32::LoadFontFromFile("C:\\Windows\\Fonts\\segmdl2.ttf", 22.0f);
+
+draw->Text(cjk, u8"\u4E2D\u6587\u6E32\u67D3\u6D4B\u8BD5", {20, 20});   // Chinese
+draw->Text(u8"\u041F\u0440\u0438\u0432\u0435\u0442!", {20, 46});      // Cyrillic, default font
+
+char icon[5];
+prim32::EncodeUtf8(0xE713, icon);                 // Segoe MDL2 "Settings" (PUA)
+draw->Text(icons, icon, {20, 72});
+```
+
+Word wrap breaks between CJK ideographs as well as at spaces. Missing glyphs
+render a notdef box (load a font that covers the script — there is no fallback
+chain yet). Measurement rasterizes lazily too, so it always matches rendering.
+
+## Rasterizers: GDI and FreeType
+
+- **GDI (default, zero dependencies):** the entire Basic Multilingual Plane —
+  all CJK, Cyrillic, and PUA icon fonts, on any Windows machine.
+- **FreeType (optional):** every Unicode plane (astral CJK extensions, etc.)
+  with FreeType hinting. Enable via `cmake -DPRIM32_WITH_FREETYPE=ON` (after
+  `vcpkg install freetype`), or define `PRIM32_HAS_FREETYPE` and link
+  `freetype` in your own build. When compiled in, all loaded fonts use
+  FreeType automatically; the built-in context font stays on GDI. The rest of
+  the engine — cache, atlas pages, incremental uploads — is
+  rasterizer-agnostic.
 
 <Info>
 **Ownership:** GDI copies the font bytes during load — free your buffer right
